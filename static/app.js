@@ -166,7 +166,7 @@
             <section class="panel owner-tools-panel"><div class="panel-heading compact"><div><h2>AI owner tools</h2><p>Private ideas from only the menu details you have saved.</p></div></div>
               <div class="owner-tool-actions"><button class="button secondary" id="generate-question-ideas">Question ideas</button><button class="button secondary" id="review-menu">Check menu gaps</button></div><div id="owner-tools-output"></div>
             </section>
-            <section class="panel voice-panel"><div class="panel-heading compact"><div><h2>Voice menu assistant</h2><p>Speak a change such as “make Lemon Pasta today’s special” or “add tomato soup for 8 dollars.” You review every change before it happens.</p></div></div>
+            <section class="panel voice-panel"><div class="panel-heading compact"><div><h2>Voice menu assistant</h2><p>Speak a change such as “make Lemon Pasta today’s special” or “add tomato soup for 8 dollars.” You review every change before it happens. If this browser blocks the microphone, type the command below; Chrome or Edge supports microphone input.</p></div></div>
               <div class="voice-actions"><button class="button primary" id="start-voice" type="button">🎙 Speak a change</button><button class="button secondary" id="preview-voice" type="button">Preview change</button></div>
               <label class="voice-transcript-label">What should change?<textarea id="voice-transcript" maxlength="1000" rows="3" placeholder="Speak with the microphone, or type a menu change here."></textarea></label><div id="voice-preview"></div>
             </section>
