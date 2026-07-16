@@ -349,12 +349,12 @@
 
   function startVoiceInput() {
     const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!Recognition) { announce("Voice recognition is not available in this browser. Type the change in the box, then tap Preview change.", "error"); return; }
+    if (!Recognition) { document.querySelector("#voice-transcript")?.focus(); announce("This browser cannot use the microphone. Type the change in the box, then tap Preview change."); return; }
     const button = document.querySelector("#start-voice"); const transcript = document.querySelector("#voice-transcript"); const recognition = new Recognition();
     recognition.lang = navigator.language || "en-US"; recognition.interimResults = false; recognition.continuous = false; recognition.maxAlternatives = 1;
     button.disabled = true; button.textContent = "Listening…";
     recognition.onresult = async (event) => { transcript.value = [...event.results].map((result) => result[0].transcript).join(" ").trim(); button.disabled = false; button.textContent = "🎙 Speak a change"; await previewVoiceCommand(); };
-    recognition.onerror = () => { button.disabled = false; button.textContent = "🎙 Speak a change"; announce("Microphone access was unavailable. Type your change in the box instead.", "error"); };
+    recognition.onerror = () => { button.disabled = false; button.textContent = "🎙 Speak a change"; document.querySelector("#voice-transcript")?.focus(); announce("This browser cannot use the microphone. Type the change in the box instead."); };
     recognition.onend = () => { button.disabled = false; button.textContent = "🎙 Speak a change"; };
     try { recognition.start(); } catch { button.disabled = false; button.textContent = "🎙 Speak a change"; announce("The microphone is already in use. Try again in a moment.", "error"); }
   }

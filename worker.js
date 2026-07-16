@@ -173,16 +173,20 @@ async function readSession(token, secret) {
     return typeof payload.rid === "string" && Number(payload.exp) > Date.now() / 1000 ? payload.rid : null;
   } catch { return null; }
 }
+function unsignedSessionRestaurantId(token) {
+  if (!token || !token.includes(".")) return null;
+  try {
+    const encoded = token.split(".")[0]; const payload = JSON.parse(decoder.decode(fromB64url(encoded)));
+    return typeof payload.rid === "string" ? payload.rid : null;
+  } catch { return null; }
+}
 async function requireOwner(request, env) {
-  const restaurantId = await readSession(cookieValue(request, "menumate_session"), appSecret(env));
+  const token = cookieValue(request, "menumate_session"); const restaurantId = unsignedSessionRestaurantId(token);
   if (!restaurantId) throw new APIError("Please log in to continue.", 401);
   const restaurant = await first(env, "SELECT * FROM restaurants WHERE id = ?", [restaurantId]);
   if (!restaurant) throw new APIError("Please log in to continue.", 401);
+  if ((await readSession(token, restaurant.password_hash)) !== restaurant.id) throw new APIError("Please log in to continue.", 401);
   return restaurant;
-}
-function appSecret(env) {
-  if (typeof env.APP_SECRET !== "string" || env.APP_SECRET.length < 16) throw new APIError("Owner authentication is not configured yet. Add the APP_SECRET in Worker Settings, then deploy.", 503);
-  return env.APP_SECRET;
 }
 function publicUrl(request, slug, env) { return `${(env.PUBLIC_BASE_URL || new URL(request.url).origin).replace(/\/$/, "")}/r/${slug}`; }
 
@@ -376,18 +380,18 @@ async function voiceCommandPlan(request, env) {
 }
 
 async function signup(request, env) {
-  const secret = appSecret(env); const data = await readBody(request); const name = requiredText(data, "restaurant_name", 100, 2); const email = requiredText(data, "email", 254, 5).toLowerCase(); const password = requiredText(data, "password", 200, 10);
+  const data = await readBody(request); const name = requiredText(data, "restaurant_name", 100, 2); const email = requiredText(data, "email", 254, 5).toLowerCase(); const password = requiredText(data, "password", 200, 10);
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new APIError("Enter a valid email address.");
   if (await first(env, "SELECT id FROM restaurants WHERE email = ?", [email])) throw new APIError("An account with that email already exists.", 409);
-  const id = uuid(); const slug = await uniqueSlug(env, name);
-  await run(env, "INSERT INTO restaurants (id, name, slug, email, password_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)", [id, name, slug, email, await passwordHash(password), now()]);
-  return json({ restaurant: { id, name, slug }, public_url: publicUrl(request, slug, env) }, 201, { "Set-Cookie": secureCookie("menumate_session", await createSession(id, secret), SESSION_TTL) });
+  const id = uuid(); const slug = await uniqueSlug(env, name); const passwordHashValue = await passwordHash(password);
+  await run(env, "INSERT INTO restaurants (id, name, slug, email, password_hash, created_at) VALUES (?, ?, ?, ?, ?, ?)", [id, name, slug, email, passwordHashValue, now()]);
+  return json({ restaurant: { id, name, slug }, public_url: publicUrl(request, slug, env) }, 201, { "Set-Cookie": secureCookie("menumate_session", await createSession(id, passwordHashValue), SESSION_TTL) });
 }
 async function login(request, env) {
-  const secret = appSecret(env); const data = await readBody(request); const email = requiredText(data, "email", 254, 5).toLowerCase(); const password = requiredText(data, "password", 200);
+  const data = await readBody(request); const email = requiredText(data, "email", 254, 5).toLowerCase(); const password = requiredText(data, "password", 200);
   const restaurant = await first(env, "SELECT * FROM restaurants WHERE email = ?", [email]);
   if (!restaurant || !(await passwordMatches(password, restaurant.password_hash))) throw new APIError("Incorrect email or password.", 401);
-  return json({ restaurant: publicRestaurant(restaurant), public_url: publicUrl(request, restaurant.slug, env) }, 200, { "Set-Cookie": secureCookie("menumate_session", await createSession(restaurant.id, secret), SESSION_TTL) });
+  return json({ restaurant: publicRestaurant(restaurant), public_url: publicUrl(request, restaurant.slug, env) }, 200, { "Set-Cookie": secureCookie("menumate_session", await createSession(restaurant.id, restaurant.password_hash), SESSION_TTL) });
 }
 async function ownerMenu(request, env, itemId = null) {
   const restaurant = await requireOwner(request, env);
