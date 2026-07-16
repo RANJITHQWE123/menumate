@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: menumate
+    runtime: docker
+    plan: starter
+    healthCheckPath: /api/health
+    disk:
+      name: menumate-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: DATABASE_PATH
+        value: /data/menumate.db
+      - key: APP_SECRET
+        generateValue: true
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: LLM_BASE_URL
+        value: https://api.openai.com/v1
+      - key: LLM_MODEL
+        value: gpt-4o-mini
