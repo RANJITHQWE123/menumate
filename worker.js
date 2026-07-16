@@ -298,7 +298,7 @@ export default {
     } catch (error) {
       if (error instanceof APIError) return json({ error: error.message }, error.status);
       console.error("MenuMate worker error", error);
-      return json({ error: "Something went wrong. Please try again." }, 500);
+      return json({ error: error?.message || "Something went wrong. Please try again." }, 500);
     }
   },
 };
