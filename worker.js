@@ -80,7 +80,7 @@ function question(row) { return { id: row.id, text: row.text, position: row.posi
 
 async function ensureSchema(env) {
   if (!env.DB) throw new APIError("Database is being connected. Please try again shortly.", 503);
-  if (!schemaPromise) schemaPromise = env.DB.batch(schema.map((statement) => env.DB.prepare(statement)));
+  if (!schemaPromise) schemaPromise = env.DB.exec(`${schema.join(";\n")};`);
   await schemaPromise;
 }
 async function first(env, sql, values = []) { return env.DB.prepare(sql).bind(...values).first(); }
