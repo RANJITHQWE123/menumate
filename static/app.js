@@ -12,6 +12,7 @@
     importDrafts: [],
     questionIdeas: [],
     menuReview: "",
+    voicePlan: null,
   };
 
   const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (character) => ({
@@ -165,6 +166,10 @@
             <section class="panel owner-tools-panel"><div class="panel-heading compact"><div><h2>AI owner tools</h2><p>Private ideas from only the menu details you have saved.</p></div></div>
               <div class="owner-tool-actions"><button class="button secondary" id="generate-question-ideas">Question ideas</button><button class="button secondary" id="review-menu">Check menu gaps</button></div><div id="owner-tools-output"></div>
             </section>
+            <section class="panel voice-panel"><div class="panel-heading compact"><div><h2>Voice menu assistant</h2><p>Speak a change such as “make Lemon Pasta today’s special” or “add tomato soup for 8 dollars.” You review every change before it happens.</p></div></div>
+              <div class="voice-actions"><button class="button primary" id="start-voice" type="button">🎙 Speak a change</button><button class="button secondary" id="preview-voice" type="button">Preview change</button></div>
+              <label class="voice-transcript-label">What should change?<textarea id="voice-transcript" maxlength="1000" rows="3" placeholder="Speak with the microphone, or type a menu change here."></textarea></label><div id="voice-preview"></div>
+            </section>
             <section class="panel qr-panel"><div class="panel-heading compact"><div><h2>QR code</h2><p>Links directly to this restaurant's public menu.</p></div></div>
               <div class="qr-url"><code>${escapeHtml(state.publicUrl)}</code></div>
               <a class="button secondary full-width" href="/api/owner/qr" download>Download QR as PNG</a>
@@ -184,6 +189,9 @@
     document.querySelector("#menu-import-form").addEventListener("submit", importMenuFile);
     document.querySelector("#generate-question-ideas").addEventListener("click", () => runOwnerTool("question_ideas"));
     document.querySelector("#review-menu").addEventListener("click", () => runOwnerTool("menu_review"));
+    document.querySelector("#start-voice").addEventListener("click", startVoiceInput);
+    document.querySelector("#preview-voice").addEventListener("click", previewVoiceCommand);
+    renderVoicePlan();
   }
 
   function renderMenuAdmin() {
@@ -317,6 +325,63 @@
       const result = await request("/api/owner/questions", { method: "POST", body: JSON.stringify({ text }) });
       state.questions.push(result.question); state.questionIdeas.splice(index, 1); renderQuestions(); renderOwnerTools(); announce("Suggested question added.");
     } catch (error) { announce(error.message, "error"); }
+  }
+
+  function voiceChangeDescription(change) {
+    if (change.type === "add_item") return `Add <strong>${escapeHtml(change.item.name)}</strong> (${money(Math.round(change.item.price * 100))})`;
+    if (change.type === "delete_item") return `Delete <strong>${escapeHtml(change.name)}</strong>`;
+    if (change.type === "add_question") return `Add guest question: “${escapeHtml(change.text)}”`;
+    const fields = [];
+    if (Object.prototype.hasOwnProperty.call(change.fields, "name")) fields.push(`rename to ${escapeHtml(change.fields.name)}`);
+    if (Object.prototype.hasOwnProperty.call(change.fields, "price")) fields.push(`price ${money(Math.round(change.fields.price * 100))}`);
+    if (Object.prototype.hasOwnProperty.call(change.fields, "category")) fields.push(`category ${escapeHtml(change.fields.category)}`);
+    if (Object.prototype.hasOwnProperty.call(change.fields, "notes")) fields.push(change.fields.notes ? "update AI notes" : "clear AI notes");
+    if (Object.prototype.hasOwnProperty.call(change.fields, "highlighted")) fields.push(change.fields.highlighted ? "mark as today’s highlight" : "remove highlight");
+    return `Change <strong>${escapeHtml(change.name)}</strong>: ${fields.join(", ")}`;
+  }
+
+  function renderVoicePlan() {
+    const root = document.querySelector("#voice-preview"); if (!root) return;
+    if (!state.voicePlan) { root.innerHTML = ""; return; }
+    root.innerHTML = `<div class="voice-preview"><strong>Review before applying</strong><p>${escapeHtml(state.voicePlan.summary)}</p><div class="voice-change-list">${state.voicePlan.changes.map((change) => `<div class="voice-change ${change.type === "delete_item" ? "destructive" : ""}">${voiceChangeDescription(change)}</div>`).join("")}</div><button class="button primary full-width" id="apply-voice-plan" type="button">Apply these changes</button></div>`;
+    root.querySelector("#apply-voice-plan").addEventListener("click", applyVoicePlan);
+  }
+
+  function startVoiceInput() {
+    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!Recognition) { announce("Voice recognition is not available in this browser. Type the change in the box, then tap Preview change.", "error"); return; }
+    const button = document.querySelector("#start-voice"); const transcript = document.querySelector("#voice-transcript"); const recognition = new Recognition();
+    recognition.lang = navigator.language || "en-US"; recognition.interimResults = false; recognition.continuous = false; recognition.maxAlternatives = 1;
+    button.disabled = true; button.textContent = "Listening…";
+    recognition.onresult = async (event) => { transcript.value = [...event.results].map((result) => result[0].transcript).join(" ").trim(); button.disabled = false; button.textContent = "🎙 Speak a change"; await previewVoiceCommand(); };
+    recognition.onerror = () => { button.disabled = false; button.textContent = "🎙 Speak a change"; announce("Microphone access was unavailable. Type your change in the box instead.", "error"); };
+    recognition.onend = () => { button.disabled = false; button.textContent = "🎙 Speak a change"; };
+    try { recognition.start(); } catch { button.disabled = false; button.textContent = "🎙 Speak a change"; announce("The microphone is already in use. Try again in a moment.", "error"); }
+  }
+
+  async function previewVoiceCommand() {
+    const transcript = document.querySelector("#voice-transcript").value.trim(); if (transcript.length < 4) { announce("Speak or type a specific menu change first.", "error"); return; }
+    const button = document.querySelector("#preview-voice"); const original = button.textContent; button.disabled = true; button.textContent = "Making preview…"; state.voicePlan = null; renderVoicePlan();
+    try {
+      state.voicePlan = await request("/api/owner/voice/plan", { method: "POST", body: JSON.stringify({ transcript }) });
+      renderVoicePlan(); announce("Review the plan below. Nothing has changed yet.");
+    } catch (error) { announce(error.message, "error"); }
+    finally { button.disabled = false; button.textContent = original; }
+  }
+
+  async function applyVoicePlan() {
+    const plan = state.voicePlan; if (!plan?.changes?.length) return;
+    if (plan.changes.some((change) => change.type === "delete_item") && !window.confirm("This plan deletes a menu item. Apply it?")) return;
+    const button = document.querySelector("#apply-voice-plan"); button.disabled = true; button.textContent = "Applying changes…";
+    try {
+      for (const change of plan.changes) {
+        if (change.type === "add_item") await request("/api/owner/menu", { method: "POST", body: JSON.stringify(change.item) });
+        else if (change.type === "update_item") await request(`/api/owner/menu/${encodeURIComponent(change.id)}`, { method: "PATCH", body: JSON.stringify(change.fields) });
+        else if (change.type === "delete_item") await request(`/api/owner/menu/${encodeURIComponent(change.id)}`, { method: "DELETE", body: "{}" });
+        else if (change.type === "add_question") await request("/api/owner/questions", { method: "POST", body: JSON.stringify({ text: change.text }) });
+      }
+      state.voicePlan = null; await dashboard(); announce("Voice changes applied. Your public menu is updated.");
+    } catch (error) { announce(`Some changes may not have been applied: ${error.message}`, "error"); button.disabled = false; button.textContent = "Apply these changes"; }
   }
 
   function renderQuestions() {

@@ -224,7 +224,7 @@ function jsonFromAi(value) {
 async function aiText(env, system, user, maxTokens = 700) {
   if (!env.AI || typeof env.AI.run !== "function") throw new APIError("Workers AI is not connected yet. Please check the AI binding.", 503);
   try {
-    const payload = await env.AI.run("@cf/meta/llama-3.1-8b-instruct-fast", { messages: [{ role: "system", content: system }, { role: "user", content: user }], max_tokens: maxTokens, temperature: 0.15 });
+    const payload = await env.AI.run("@cf/meta/llama-3.1-8b-instruct-fast", { messages: [{ role: "system", content: system }, { role: "user", content: user }], max_tokens: Math.min(maxTokens, 512), temperature: 0.15 });
     const answer = typeof payload?.response === "string" ? payload.response.trim() : "";
     if (!answer) throw new Error("Empty AI response");
     return answer;
@@ -285,6 +285,54 @@ async function ownerAiTools(request, env) {
     return json({ review: (await aiText(env, system, "Review this menu for the owner.", 420)).slice(0, 1800) });
   }
   throw new APIError("Unknown AI owner tool.");
+}
+function voiceChanges(rawChanges, items) {
+  if (!Array.isArray(rawChanges)) return [];
+  const byName = new Map();
+  for (const item of items) {
+    const key = item.name.trim().toLowerCase();
+    byName.set(key, byName.has(key) ? null : item);
+  }
+  const changes = [];
+  for (const raw of rawChanges) {
+    if (!raw || typeof raw !== "object") continue;
+    const type = String(raw.type || "").toLowerCase();
+    if (type === "add_item") {
+      const item = importableMenuItems([raw.item || raw])[0];
+      if (item) changes.push({ type, item });
+      continue;
+    }
+    if (type === "add_question" && typeof raw.text === "string") {
+      const text = raw.text.trim().slice(0, 240); if (text.length >= 4) changes.push({ type, text });
+      continue;
+    }
+    const targetName = typeof raw.target_name === "string" ? raw.target_name.trim() : "";
+    const target = targetName ? byName.get(targetName.toLowerCase()) : null;
+    if (!target) continue;
+    if (type === "delete_item") { changes.push({ type, id: target.id, name: target.name }); continue; }
+    if (type !== "update_item" || !raw.fields || typeof raw.fields !== "object") continue;
+    const fields = {};
+    if (typeof raw.fields.name === "string" && raw.fields.name.trim().length >= 2) fields.name = raw.fields.name.trim().slice(0, 120);
+    if (Object.prototype.hasOwnProperty.call(raw.fields, "price")) {
+      const price = Number(raw.fields.price); if (Number.isFinite(price) && price >= 0 && price <= 100000) fields.price = Math.round(price * 100) / 100;
+    }
+    if (typeof raw.fields.category === "string" && raw.fields.category.trim()) fields.category = raw.fields.category.trim().slice(0, 80);
+    if (typeof raw.fields.notes === "string" && raw.fields.notes.length <= 4000) fields.notes = raw.fields.notes.trim();
+    if (typeof raw.fields.highlighted === "boolean") fields.highlighted = raw.fields.highlighted;
+    if (Object.keys(fields).length) changes.push({ type, id: target.id, name: target.name, fields });
+  }
+  return changes.slice(0, 20);
+}
+async function voiceCommandPlan(request, env) {
+  const restaurant = await requireOwner(request, env); const transcript = requiredText(await readBody(request), "transcript", 1000, 4);
+  const items = await all(env, "SELECT * FROM menu_items WHERE restaurant_id = ? ORDER BY lower(category), lower(name)", [restaurant.id]);
+  const currentMenu = items.length ? items.map((item) => `- ${item.name} | ${item.category} | $${(item.price_cents / 100).toFixed(2)} | notes: ${item.notes || "none"} | highlighted: ${Boolean(item.highlighted)}`).join("\n") : "No menu items exist yet.";
+  const system = `You turn one restaurant owner's spoken command into a reviewable change plan. Return ONLY valid JSON in this exact shape: {"summary":"","changes":[]}. Each change must use exactly one of these forms:\n{"type":"add_item","item":{"name":"","price":0,"category":"Menu","notes":"","highlighted":false}}\n{"type":"update_item","target_name":"exact existing item name","fields":{"price":0,"highlighted":true}}\n{"type":"delete_item","target_name":"exact existing item name"}\n{"type":"add_question","text":""}\n\nRules:\n- Create only changes explicitly requested in the owner's spoken command. Do not infer facts, prices, ingredients, allergens, notes, categories, discounts, or availability.\n- For a new item, require an explicitly spoken numeric price. If the price is missing, do not add an item.\n- For existing items, copy the exact target_name from CURRENT MENU.\n- A request to make an item a special, highlight, offer, or today's item means update_item fields.highlighted true. Removing a special means false.\n- Delete only when the owner explicitly says delete or remove.\n- For notes, use only details the owner said.\n- No Markdown, no explanations outside the JSON.\n\nCURRENT MENU:\n${currentMenu}`;
+  const parsed = jsonFromAi(await aiText(env, system, `OWNER'S SPOKEN COMMAND:\n${transcript}`, 512));
+  const changes = voiceChanges(parsed?.changes, items);
+  if (!changes.length) throw new APIError("I could not make a safe change plan from that. Say a specific item, price, special, question, or deletion, then try again.", 422);
+  const summary = typeof parsed?.summary === "string" && parsed.summary.trim() ? parsed.summary.trim().slice(0, 280) : "Review these requested menu changes before applying them.";
+  return json({ transcript, summary, changes });
 }
 
 async function signup(request, env) {
@@ -370,6 +418,7 @@ async function api(request, env, path) {
   if (path === "/api/owner/me" && request.method === "GET") { const restaurant = await requireOwner(request, env); return json({ restaurant: publicRestaurant(restaurant), public_url: publicUrl(request, restaurant.slug, env) }); }
   if (path === "/api/owner/menu-import" && request.method === "POST") return menuImport(request, env);
   if (path === "/api/owner/ai-tools" && request.method === "POST") return ownerAiTools(request, env);
+  if (path === "/api/owner/voice/plan" && request.method === "POST") return voiceCommandPlan(request, env);
   if (path === "/api/owner/menu") return ownerMenu(request, env);
   if (path.startsWith("/api/owner/menu/")) return ownerMenu(request, env, path.split("/").pop());
   if (path === "/api/owner/questions") return ownerQuestions(request, env);
