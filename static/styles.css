@@ -105,6 +105,24 @@ textarea { resize: vertical; min-height: 5.4rem; line-height: 1.45; }
 .empty-state strong { color: var(--ink); }
 .inline-form { display: flex; gap: .45rem; align-items: stretch; }
 .inline-form input { min-width: 0; }
+.import-form { display: grid; gap: .6rem; }
+.import-form input[type="file"] { padding: .48rem; font-size: .83rem; }
+.import-drafts-heading { display: grid; gap: .16rem; margin: 1rem 0 .55rem; font-size: .84rem; }
+.import-drafts-heading span { color: var(--muted); line-height: 1.35; }
+.import-draft-list { display: grid; max-height: 300px; overflow: auto; border: 1px solid var(--line); border-radius: .65rem; margin-bottom: .65rem; }
+.import-draft { display: grid; grid-template-columns: auto 1fr; align-items: start; gap: .55rem; padding: .66rem; border-bottom: 1px solid var(--line); cursor: pointer; }
+.import-draft:last-child { border-bottom: 0; }
+.import-draft input { width: 1rem; height: 1rem; margin-top: .12rem; accent-color: var(--green); }
+.import-draft-copy { display: grid; gap: .08rem; min-width: 0; font-size: .84rem; line-height: 1.35; }
+.import-draft-copy > span, .import-draft-copy small { color: var(--muted); font-weight: 500; }
+.import-draft-copy small { white-space: pre-line; }
+.import-draft-copy em { color: #815c0d; font-size: .74rem; font-style: normal; font-weight: 800; }
+.owner-tool-actions { display: grid; grid-template-columns: 1fr 1fr; gap: .45rem; }
+.owner-tool-actions .button { white-space: normal; }
+.owner-ideas, .owner-review { display: grid; gap: .38rem; margin-top: .9rem; padding-top: .85rem; border-top: 1px solid var(--line); font-size: .84rem; }
+.owner-idea { display: flex; gap: .5rem; justify-content: space-between; align-items: start; color: var(--muted); line-height: 1.35; }
+.owner-idea > span { flex: 1; }
+.owner-review p { margin: 0; color: var(--muted); white-space: pre-line; line-height: 1.45; }
 .question-admin-list { display: grid; margin-top: .7rem; }
 .question-admin-row { display: flex; gap: .75rem; align-items: start; justify-content: space-between; padding: .7rem 0; border-top: 1px solid var(--line); font-size: .88rem; line-height: 1.4; }
 .question-admin-row > span { flex: 1; }

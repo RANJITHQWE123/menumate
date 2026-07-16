@@ -9,6 +9,9 @@
     menu: [],
     questions: [],
     logs: [],
+    importDrafts: [],
+    questionIdeas: [],
+    menuReview: "",
   };
 
   const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (character) => ({
@@ -18,10 +21,12 @@
   const dateTime = (iso) => new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 
   async function request(url, options = {}) {
+    const headers = new Headers(options.headers || {});
+    if (!(options.body instanceof FormData) && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
     const response = await fetch(url, {
       credentials: "same-origin",
-      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
       ...options,
+      headers,
     });
     const isJson = response.headers.get("content-type")?.includes("application/json");
     const data = isJson ? await response.json() : null;
@@ -149,9 +154,16 @@
             <div id="menu-list" class="menu-admin-list"></div>
           </section>
           <aside class="dashboard-side">
+            <section class="panel import-panel"><div class="panel-heading compact"><div><h2>Import a menu</h2><p>Upload one menu photo or PDF. AI reads it into editable drafts; the original file is not published or kept.</p></div></div>
+              <form id="menu-import-form" class="import-form"><input name="menu" type="file" accept="application/pdf,image/jpeg,image/png,image/webp,.pdf,.jpg,.jpeg,.png,.webp" required /><button class="button primary" type="submit">Read menu with AI</button></form>
+              <p class="field-help">PDF, JPG, PNG, or WebP · up to 10 MB · review before saving</p><div id="import-drafts"></div>
+            </section>
             <section class="panel"><div class="panel-heading compact"><div><h2>Suggested questions</h2><p>Your own tappable prompts for guests.</p></div></div>
               <form id="question-form" class="inline-form"><input name="text" maxlength="240" required placeholder="e.g. What's available under $20?" aria-label="Suggested question" /><button class="button primary" type="submit">Add</button></form>
               <div id="question-list" class="question-admin-list"></div>
+            </section>
+            <section class="panel owner-tools-panel"><div class="panel-heading compact"><div><h2>AI owner tools</h2><p>Private ideas from only the menu details you have saved.</p></div></div>
+              <div class="owner-tool-actions"><button class="button secondary" id="generate-question-ideas">Question ideas</button><button class="button secondary" id="review-menu">Check menu gaps</button></div><div id="owner-tools-output"></div>
             </section>
             <section class="panel qr-panel"><div class="panel-heading compact"><div><h2>QR code</h2><p>Links directly to this restaurant's public menu.</p></div></div>
               <div class="qr-url"><code>${escapeHtml(state.publicUrl)}</code></div>
@@ -164,9 +176,14 @@
     renderMenuAdmin();
     renderQuestions();
     renderLogs();
+    renderImportDrafts();
+    renderOwnerTools();
     document.querySelector("#logout").addEventListener("click", logout);
     document.querySelector("#add-menu-item").addEventListener("click", () => openMenuEditor());
     document.querySelector("#question-form").addEventListener("submit", addQuestion);
+    document.querySelector("#menu-import-form").addEventListener("submit", importMenuFile);
+    document.querySelector("#generate-question-ideas").addEventListener("click", () => runOwnerTool("question_ideas"));
+    document.querySelector("#review-menu").addEventListener("click", () => runOwnerTool("menu_review"));
   }
 
   function renderMenuAdmin() {
@@ -228,6 +245,77 @@
       await request(`/api/owner/menu/${itemId}`, { method: "DELETE" });
       state.menu = state.menu.filter((item) => item.id !== itemId);
       closeMenuEditor(); renderMenuAdmin(); announce("Menu item deleted.");
+    } catch (error) { announce(error.message, "error"); }
+  }
+
+  async function importMenuFile(event) {
+    event.preventDefault();
+    const form = event.currentTarget; const file = form.elements.menu.files?.[0]; const button = form.querySelector("button");
+    if (!file) return;
+    button.disabled = true; button.textContent = "Reading menuâ€¦";
+    try {
+      const body = new FormData(); body.set("menu", file, file.name);
+      const result = await request("/api/owner/menu-import", { method: "POST", body });
+      state.importDrafts = result.items.map((item) => ({ ...item, draftId: crypto.randomUUID() }));
+      renderImportDrafts(); announce(result.message);
+    } catch (error) { announce(error.message, "error"); }
+    finally { button.disabled = false; button.textContent = "Read menu with AI"; form.reset(); }
+  }
+
+  function renderImportDrafts() {
+    const root = document.querySelector("#import-drafts"); if (!root) return;
+    if (!state.importDrafts.length) { root.innerHTML = ""; return; }
+    root.innerHTML = `<div class="import-drafts-heading"><strong>Review imported drafts</strong><span>Select the dishes you want to add. You can edit all details afterward.</span></div><div class="import-draft-list">${state.importDrafts.map((item) => `<label class="import-draft"><input type="checkbox" value="${escapeHtml(item.draftId)}" checked /><span class="import-draft-copy"><strong>${escapeHtml(item.name)}</strong><span>${escapeHtml(item.category)} · ${money(Math.round(item.price * 100))}</span>${item.notes ? `<small>${escapeHtml(item.notes)}</small>` : ""}${item.highlighted ? '<em>Marked as a highlight</em>' : ""}</span></label>`).join("")}</div><button class="button primary full-width" id="import-selected" type="button">Add selected items</button>`;
+    root.querySelector("#import-selected").addEventListener("click", importSelectedDrafts);
+  }
+
+  async function importSelectedDrafts() {
+    const root = document.querySelector("#import-drafts"); const selected = new Set([...root.querySelectorAll("input:checked")].map((input) => input.value));
+    const drafts = state.importDrafts.filter((item) => selected.has(item.draftId));
+    if (!drafts.length) { announce("Select at least one imported item.", "error"); return; }
+    const button = root.querySelector("#import-selected"); button.disabled = true; button.textContent = "Adding itemsâ€¦";
+    const added = []; let failure = null;
+    for (const draft of drafts) {
+      try {
+        const result = await request("/api/owner/menu", { method: "POST", body: JSON.stringify(draft) });
+        added.push({ draftId: draft.draftId, item: result.item });
+      } catch (error) { failure = error; break; }
+    }
+    if (added.length) {
+      state.menu.push(...added.map((entry) => entry.item));
+      state.menu.sort((a, b) => Number(b.highlighted) - Number(a.highlighted) || a.category.localeCompare(b.category) || a.name.localeCompare(b.name));
+      state.importDrafts = state.importDrafts.filter((draft) => !added.some((entry) => entry.draftId === draft.draftId));
+      renderMenuAdmin(); renderImportDrafts();
+    }
+    if (failure) announce(`${added.length} item${added.length === 1 ? "" : "s"} added. The remaining items were not saved: ${failure.message}`, "error");
+    else announce(`${added.length} menu item${added.length === 1 ? "" : "s"} added. Review the AI notes before sharing the menu.`);
+  }
+
+  function renderOwnerTools() {
+    const root = document.querySelector("#owner-tools-output"); if (!root) return;
+    const ideas = state.questionIdeas.length ? `<div class="owner-ideas"><strong>Question ideas</strong>${state.questionIdeas.map((idea, index) => `<div class="owner-idea"><span>${escapeHtml(idea)}</span><button class="mini-button add-idea" data-idea-index="${index}">Add</button></div>`).join("")}</div>` : "";
+    const review = state.menuReview ? `<div class="owner-review"><strong>Menu check</strong><p>${escapeHtml(state.menuReview)}</p></div>` : "";
+    root.innerHTML = ideas || review ? `${ideas}${review}` : "";
+    root.querySelectorAll(".add-idea").forEach((button) => button.addEventListener("click", () => addQuestionIdea(Number(button.dataset.ideaIndex))));
+  }
+
+  async function runOwnerTool(action) {
+    const button = document.querySelector(action === "question_ideas" ? "#generate-question-ideas" : "#review-menu"); const original = button.textContent;
+    button.disabled = true; button.textContent = "Workingâ€¦";
+    try {
+      const result = await request("/api/owner/ai-tools", { method: "POST", body: JSON.stringify({ action }) });
+      if (action === "question_ideas") { state.questionIdeas = result.questions; announce("Question ideas are ready. Add only the ones you want."); }
+      else { state.menuReview = result.review; announce("Your private menu check is ready."); }
+      renderOwnerTools();
+    } catch (error) { announce(error.message, "error"); }
+    finally { button.disabled = false; button.textContent = original; }
+  }
+
+  async function addQuestionIdea(index) {
+    const text = state.questionIdeas[index]; if (!text) return;
+    try {
+      const result = await request("/api/owner/questions", { method: "POST", body: JSON.stringify({ text }) });
+      state.questions.push(result.question); state.questionIdeas.splice(index, 1); renderQuestions(); renderOwnerTools(); announce("Suggested question added.");
     } catch (error) { announce(error.message, "error"); }
   }
 
