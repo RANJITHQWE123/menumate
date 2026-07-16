@@ -133,8 +133,8 @@ async function hmac(value, secret) {
 async function passwordHash(password) {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const key = await crypto.subtle.importKey("raw", encoder.encode(password), "PBKDF2", false, ["deriveBits"]);
-  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt, iterations: 310000 }, key, 256);
-  return `pbkdf2_sha256$310000$${b64url(salt)}$${b64url(new Uint8Array(bits))}`;
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt, iterations: 100000 }, key, 256);
+  return `pbkdf2_sha256$100000$${b64url(salt)}$${b64url(new Uint8Array(bits))}`;
 }
 function equalText(a, b) {
   if (a.length !== b.length) return false;
