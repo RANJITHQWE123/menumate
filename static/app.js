@@ -3,6 +3,9 @@
 
   const app = document.querySelector("#app");
   const path = window.location.pathname.replace(/\/$/, "") || "/";
+  const PDFJS_VERSION = "4.10.38";
+  const MAX_IMPORT_IMAGE_BYTES = 9 * 1024 * 1024;
+  let pdfjsPromise = null;
   const state = {
     restaurant: null,
     publicUrl: null,
@@ -156,9 +159,9 @@
             <div id="menu-list" class="menu-admin-list"></div>
           </section>
           <aside class="dashboard-side">
-            <section class="panel import-panel"><div class="panel-heading compact"><div><h2>Import a menu</h2><p>Upload a PDF or clear menu photo. MenuMate reads the actual document text, finds priced dishes, and gives you editable drafts. The original file is never published.</p></div></div>
+            <section class="panel import-panel"><div class="panel-heading compact"><div><h2>Import a menu</h2><p>Upload a PDF or clear menu photo. MenuMate reads each page, finds priced dishes, and gives you editable drafts. The original file is never published.</p></div></div>
               <form id="menu-import-form" class="import-form"><input name="menu" type="file" accept="application/pdf,image/jpeg,image/png,image/webp,.pdf,.jpg,.jpeg,.png,.webp" required /><button class="button primary" type="submit">Read menu with AI</button></form>
-              <p class="field-help">PDF, JPG, PNG, or WebP · up to 10 MB · you review every extracted dish before it is saved</p><div id="import-drafts"></div>
+              <p class="field-help">PDF (up to 6 pages), JPG, PNG, or WebP · up to 10 MB · every extracted dish stays a draft until you approve it</p><div id="import-drafts"></div>
             </section>
             <section class="panel"><div class="panel-heading compact"><div><h2>Suggested questions</h2><p>Your own tappable prompts for guests.</p></div></div>
               <form id="question-form" class="inline-form"><input name="text" maxlength="240" required placeholder="e.g. What's available under $20?" aria-label="Suggested question" /><button class="button primary" type="submit">Add</button></form>
@@ -259,13 +262,56 @@
     } catch (error) { announce(error.message, "error"); }
   }
 
+  async function loadPdfJs() {
+    if (!pdfjsPromise) pdfjsPromise = import(`https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${PDFJS_VERSION}/pdf.min.mjs`).then((pdfjs) => {
+      pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${PDFJS_VERSION}/pdf.worker.min.mjs`;
+      return pdfjs;
+    });
+    return pdfjsPromise;
+  }
+
+  function canvasToJpeg(canvas, quality) {
+    return new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
+  }
+
+  async function pdfPagesForOcr(file) {
+    let pdfjs;
+    try { pdfjs = await loadPdfJs(); }
+    catch { throw new Error("This browser could not prepare the PDF. Please open MenuMate in regular Chrome or Edge and try again."); }
+    let pdfDocument;
+    try { pdfDocument = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise; }
+    catch { throw new Error("That PDF could not be opened. Please use a standard PDF or a clear photo of the menu."); }
+    if (!pdfDocument.numPages) throw new Error("That PDF has no pages to read.");
+    if (pdfDocument.numPages > 6) throw new Error("Please upload a menu PDF with six pages or fewer.");
+    const files = []; let totalBytes = 0;
+    for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
+      const page = await pdfDocument.getPage(pageNumber); const base = page.getViewport({ scale: 1 });
+      const scale = Math.min(2, 1800 / Math.max(base.width, base.height)); const viewport = page.getViewport({ scale });
+      const canvas = document.createElement("canvas"); canvas.width = Math.ceil(viewport.width); canvas.height = Math.ceil(viewport.height);
+      const context = canvas.getContext("2d", { alpha: false }); context.fillStyle = "#ffffff"; context.fillRect(0, 0, canvas.width, canvas.height);
+      await page.render({ canvasContext: context, viewport, background: "#ffffff" }).promise;
+      const blob = await canvasToJpeg(canvas, 0.84); canvas.width = 1; canvas.height = 1;
+      if (!blob) throw new Error("This PDF page could not be prepared. Please try a clearer menu file.");
+      totalBytes += blob.size;
+      if (totalBytes > MAX_IMPORT_IMAGE_BYTES) throw new Error("This PDF becomes too large to read safely. Use a smaller PDF or upload clear menu photos instead.");
+      const baseName = file.name.replace(/\.[^.]+$/, "") || "menu";
+      files.push(new File([blob], `${baseName}-page-${pageNumber}.jpg`, { type: "image/jpeg" }));
+    }
+    return files;
+  }
+
   async function importMenuFile(event) {
     event.preventDefault();
     const form = event.currentTarget; const file = form.elements.menu.files?.[0]; const button = form.querySelector("button");
     if (!file) return;
-    button.disabled = true; button.textContent = "Reading menuâ€¦";
+    button.disabled = true; button.textContent = "Preparing menu...";
     try {
-      const body = new FormData(); body.set("menu", file, file.name);
+      const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+      const files = isPdf ? await pdfPagesForOcr(file) : [file];
+      button.textContent = isPdf ? "Reading PDF pages..." : "Reading menu...";
+      const body = new FormData();
+      for (const page of files) body.append("menu", page, page.name);
+      body.set("ocr_pages", "true"); body.set("source_name", file.name);
       const result = await request("/api/owner/menu-import", { method: "POST", body });
       state.importDrafts = result.items.map((item) => ({ ...item, draftId: crypto.randomUUID() })); state.importSource = result.source || null;
       renderImportDrafts(); announce(result.message);
@@ -276,7 +322,7 @@
   function renderImportDrafts() {
     const root = document.querySelector("#import-drafts"); if (!root) return;
     if (!state.importDrafts.length) { root.innerHTML = ""; return; }
-    const readSummary = state.importSource?.characters_read ? `Read ${Number(state.importSource.characters_read).toLocaleString()} characters from ${escapeHtml(state.importSource.name)}. ` : "";
+    const readSummary = state.importSource?.characters_read ? `Read ${Number(state.importSource.characters_read).toLocaleString()} characters using ${escapeHtml(state.importSource.method || "menu reader")} from ${escapeHtml(state.importSource.name)}. ` : "";
     root.innerHTML = `<div class="import-drafts-heading"><strong>Review imported drafts</strong><span>${readSummary}Select the dishes you want to add. You can edit all details afterward.</span></div><div class="import-draft-list">${state.importDrafts.map((item) => `<label class="import-draft"><input type="checkbox" value="${escapeHtml(item.draftId)}" checked /><span class="import-draft-copy"><strong>${escapeHtml(item.name)}</strong><span>${escapeHtml(item.category)} · ${money(Math.round(item.price * 100))}</span>${item.notes ? `<small>${escapeHtml(item.notes)}</small>` : ""}${item.highlighted ? '<em>Marked as a highlight</em>' : ""}</span></label>`).join("")}</div><button class="button primary full-width" id="import-selected" type="button">Add selected items</button>`;
     root.querySelector("#import-selected").addEventListener("click", importSelectedDrafts);
   }
