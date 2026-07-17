@@ -360,7 +360,7 @@ async function menuImport(request, env) {
   if (length && length > MAX_UPLOAD_BYTES + 1024 * 64) throw new APIError("Use a PDF or photo smaller than 10 MB.", 413);
   const form = await request.formData(); const files = form.getAll("menu").filter((entry) => entry && typeof entry === "object" && typeof entry.name === "string" && typeof entry.size === "number" && typeof entry.arrayBuffer === "function");
   if (!files.length) throw new APIError("Choose one menu photo or PDF to import.");
-  if (files.length > 6) throw new APIError("Use a menu with six pages or fewer.", 413);
+  if (files.length > 20) throw new APIError("Use a menu with 20 pages or fewer.", 413);
   const requestedName = form.get("source_name"); const sourceName = typeof requestedName === "string" && requestedName.trim() ? requestedName.trim().slice(0, 240) : files[0].name;
   const scanPages = form.get("ocr_pages") === "true";
   let totalSize = 0;

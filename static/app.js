@@ -5,6 +5,7 @@
   const path = window.location.pathname.replace(/\/$/, "") || "/";
   const PDFJS_VERSION = "4.10.38";
   const MAX_IMPORT_IMAGE_BYTES = 9 * 1024 * 1024;
+  const MAX_PDF_PAGES = 20;
   let pdfjsPromise = null;
   const state = {
     restaurant: null,
@@ -161,7 +162,7 @@
           <aside class="dashboard-side">
             <section class="panel import-panel"><div class="panel-heading compact"><div><h2>Import a menu</h2><p>Upload a PDF or clear menu photo. MenuMate reads each page, finds priced dishes, and gives you editable drafts. The original file is never published.</p></div></div>
               <form id="menu-import-form" class="import-form"><input name="menu" type="file" accept="application/pdf,image/jpeg,image/png,image/webp,.pdf,.jpg,.jpeg,.png,.webp" required /><button class="button primary" type="submit">Read menu with AI</button></form>
-              <p class="field-help">PDF (up to 6 pages), JPG, PNG, or WebP · up to 10 MB · every extracted dish stays a draft until you approve it</p><div id="import-drafts"></div>
+              <p class="field-help">PDF (up to 20 pages), JPG, PNG, or WebP · up to 10 MB · every extracted dish stays a draft until you approve it</p><div id="import-drafts"></div>
             </section>
             <section class="panel"><div class="panel-heading compact"><div><h2>Suggested questions</h2><p>Your own tappable prompts for guests.</p></div></div>
               <form id="question-form" class="inline-form"><input name="text" maxlength="240" required placeholder="e.g. What's available under $20?" aria-label="Suggested question" /><button class="button primary" type="submit">Add</button></form>
@@ -274,6 +275,23 @@
     return new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
   }
 
+  async function renderPdfPages(pdfDocument, file, longSide, quality) {
+    const files = []; let totalBytes = 0;
+    for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
+      const page = await pdfDocument.getPage(pageNumber); const base = page.getViewport({ scale: 1 });
+      const scale = Math.min(2, longSide / Math.max(base.width, base.height)); const viewport = page.getViewport({ scale });
+      const canvas = document.createElement("canvas"); canvas.width = Math.ceil(viewport.width); canvas.height = Math.ceil(viewport.height);
+      const context = canvas.getContext("2d", { alpha: false }); context.fillStyle = "#ffffff"; context.fillRect(0, 0, canvas.width, canvas.height);
+      await page.render({ canvasContext: context, viewport, background: "#ffffff" }).promise;
+      const blob = await canvasToJpeg(canvas, quality); canvas.width = 1; canvas.height = 1; page.cleanup();
+      if (!blob) throw new Error("This PDF page could not be prepared. Please try a clearer menu file.");
+      totalBytes += blob.size;
+      const baseName = file.name.replace(/\.[^.]+$/, "") || "menu";
+      files.push(new File([blob], `${baseName}-page-${pageNumber}.jpg`, { type: "image/jpeg" }));
+    }
+    return { files, totalBytes };
+  }
+
   async function pdfPagesForOcr(file) {
     let pdfjs;
     try { pdfjs = await loadPdfJs(); }
@@ -282,22 +300,11 @@
     try { pdfDocument = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise; }
     catch { throw new Error("That PDF could not be opened. Please use a standard PDF or a clear photo of the menu."); }
     if (!pdfDocument.numPages) throw new Error("That PDF has no pages to read.");
-    if (pdfDocument.numPages > 6) throw new Error("Please upload a menu PDF with six pages or fewer.");
-    const files = []; let totalBytes = 0;
-    for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
-      const page = await pdfDocument.getPage(pageNumber); const base = page.getViewport({ scale: 1 });
-      const scale = Math.min(2, 1800 / Math.max(base.width, base.height)); const viewport = page.getViewport({ scale });
-      const canvas = document.createElement("canvas"); canvas.width = Math.ceil(viewport.width); canvas.height = Math.ceil(viewport.height);
-      const context = canvas.getContext("2d", { alpha: false }); context.fillStyle = "#ffffff"; context.fillRect(0, 0, canvas.width, canvas.height);
-      await page.render({ canvasContext: context, viewport, background: "#ffffff" }).promise;
-      const blob = await canvasToJpeg(canvas, 0.84); canvas.width = 1; canvas.height = 1;
-      if (!blob) throw new Error("This PDF page could not be prepared. Please try a clearer menu file.");
-      totalBytes += blob.size;
-      if (totalBytes > MAX_IMPORT_IMAGE_BYTES) throw new Error("This PDF becomes too large to read safely. Use a smaller PDF or upload clear menu photos instead.");
-      const baseName = file.name.replace(/\.[^.]+$/, "") || "menu";
-      files.push(new File([blob], `${baseName}-page-${pageNumber}.jpg`, { type: "image/jpeg" }));
-    }
-    return files;
+    if (pdfDocument.numPages > MAX_PDF_PAGES) throw new Error(`Please split this PDF into sections of ${MAX_PDF_PAGES} pages or fewer.`);
+    let rendered = await renderPdfPages(pdfDocument, file, 1800, 0.84);
+    if (rendered.totalBytes > MAX_IMPORT_IMAGE_BYTES) rendered = await renderPdfPages(pdfDocument, file, 1100, 0.68);
+    if (rendered.totalBytes > MAX_IMPORT_IMAGE_BYTES) throw new Error("This PDF is too image-heavy to upload safely. Use a smaller PDF or upload its menu pages as clear photos.");
+    return rendered.files;
   }
 
   async function importMenuFile(event) {
