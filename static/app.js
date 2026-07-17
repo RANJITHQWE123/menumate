@@ -10,6 +10,7 @@
     questions: [],
     logs: [],
     importDrafts: [],
+    importSource: null,
     questionIdeas: [],
     menuReview: "",
     voicePlan: null,
@@ -155,20 +156,20 @@
             <div id="menu-list" class="menu-admin-list"></div>
           </section>
           <aside class="dashboard-side">
-            <section class="panel import-panel"><div class="panel-heading compact"><div><h2>Import a menu</h2><p>Upload one menu photo or PDF. AI reads it into editable drafts; the original file is not published or kept.</p></div></div>
+            <section class="panel import-panel"><div class="panel-heading compact"><div><h2>Import a menu</h2><p>Upload a PDF or clear menu photo. MenuMate reads the actual document text, finds priced dishes, and gives you editable drafts. The original file is never published.</p></div></div>
               <form id="menu-import-form" class="import-form"><input name="menu" type="file" accept="application/pdf,image/jpeg,image/png,image/webp,.pdf,.jpg,.jpeg,.png,.webp" required /><button class="button primary" type="submit">Read menu with AI</button></form>
-              <p class="field-help">PDF, JPG, PNG, or WebP · up to 10 MB · review before saving</p><div id="import-drafts"></div>
+              <p class="field-help">PDF, JPG, PNG, or WebP · up to 10 MB · you review every extracted dish before it is saved</p><div id="import-drafts"></div>
             </section>
             <section class="panel"><div class="panel-heading compact"><div><h2>Suggested questions</h2><p>Your own tappable prompts for guests.</p></div></div>
               <form id="question-form" class="inline-form"><input name="text" maxlength="240" required placeholder="e.g. What's available under $20?" aria-label="Suggested question" /><button class="button primary" type="submit">Add</button></form>
               <div id="question-list" class="question-admin-list"></div>
             </section>
-            <section class="panel owner-tools-panel"><div class="panel-heading compact"><div><h2>AI owner tools</h2><p>Private ideas from only the menu details you have saved.</p></div></div>
-              <div class="owner-tool-actions"><button class="button secondary" id="generate-question-ideas">Question ideas</button><button class="button secondary" id="review-menu">Check menu gaps</button></div><div id="owner-tools-output"></div>
+            <section class="panel owner-tools-panel"><div class="panel-heading compact"><div><h2>Menu insights</h2><p>Useful guest questions and information gaps based only on the menu you have saved. These work even when AI is busy.</p></div></div>
+              <div class="owner-tool-actions"><button class="button secondary" id="generate-question-ideas">Suggest guest questions</button><button class="button secondary" id="review-menu">Find missing details</button></div><div id="owner-tools-output"></div>
             </section>
-            <section class="panel voice-panel"><div class="panel-heading compact"><div><h2>Voice menu assistant</h2><p>Speak a change such as “make Lemon Pasta today’s special” or “add tomato soup for 8 dollars.” You review every change before it happens. If this browser blocks the microphone, type the command below; Chrome or Edge supports microphone input.</p></div></div>
-              <div class="voice-actions"><button class="button primary" id="start-voice" type="button">🎙 Speak a change</button><button class="button secondary" id="preview-voice" type="button">Preview change</button></div>
-              <label class="voice-transcript-label">What should change?<textarea id="voice-transcript" maxlength="1000" rows="3" placeholder="Speak with the microphone, or type a menu change here."></textarea></label><div id="voice-preview"></div>
+            <section class="panel voice-panel"><div class="panel-heading compact"><div><h2>Menu assistant</h2><p>Tell it a change by voice or text: “make Lemon Pasta today’s special”, “delete Tomato Soup”, or “add a note to Curry: contains cashews.” You always review the plan before anything is changed.</p></div></div>
+              <div class="voice-actions"><button class="button primary" id="start-voice" type="button">🎙 Talk to assistant</button><button class="button secondary" id="preview-voice" type="button">Create safe plan</button></div>
+              <label class="voice-transcript-label">Tell the assistant what to change<textarea id="voice-transcript" maxlength="1000" rows="3" placeholder="Type an instruction here, or speak it with the microphone."></textarea></label><p class="field-help">Microphone input requires normal Chrome or Edge. Typing works in every browser.</p><div id="voice-preview"></div>
             </section>
             <section class="panel qr-panel"><div class="panel-heading compact"><div><h2>QR code</h2><p>Links directly to this restaurant's public menu.</p></div></div>
               <div class="qr-url"><code>${escapeHtml(state.publicUrl)}</code></div>
@@ -192,6 +193,7 @@
     document.querySelector("#start-voice").addEventListener("click", startVoiceInput);
     document.querySelector("#preview-voice").addEventListener("click", previewVoiceCommand);
     renderVoicePlan();
+    if (state.menu.length) { runOwnerTool("question_ideas"); runOwnerTool("menu_review"); }
   }
 
   function renderMenuAdmin() {
@@ -203,11 +205,12 @@
     list.innerHTML = state.menu.map((item) => `
       <article class="admin-menu-row" data-menu-id="${item.id}">
         <div class="admin-menu-main"><div class="item-name-line"><h3>${escapeHtml(item.name)}</h3>${item.highlighted ? '<span class="special-badge">Highlighted</span>' : ""}</div><span class="category-label">${escapeHtml(item.category)}</span><p>${item.notes ? escapeHtml(item.notes) : '<em>No AI notes added.</em>'}</p></div>
-        <div class="admin-menu-actions"><strong>${money(item.price_cents)}</strong><button class="button quiet edit-item" data-menu-id="${item.id}">Edit</button></div>
+        <div class="admin-menu-actions"><strong>${money(item.price_cents)}</strong><button class="button quiet edit-item" data-menu-id="${item.id}">Edit</button><button class="mini-button delete-item" data-menu-id="${item.id}">Delete</button></div>
       </article>`).join("");
     list.querySelectorAll(".edit-item").forEach((button) => button.addEventListener("click", () => {
       openMenuEditor(state.menu.find((item) => item.id === button.dataset.menuId));
     }));
+    list.querySelectorAll(".delete-item").forEach((button) => button.addEventListener("click", () => deleteMenuItem(button.dataset.menuId)));
   }
 
   function openMenuEditor(item = null) {
@@ -264,7 +267,7 @@
     try {
       const body = new FormData(); body.set("menu", file, file.name);
       const result = await request("/api/owner/menu-import", { method: "POST", body });
-      state.importDrafts = result.items.map((item) => ({ ...item, draftId: crypto.randomUUID() }));
+      state.importDrafts = result.items.map((item) => ({ ...item, draftId: crypto.randomUUID() })); state.importSource = result.source || null;
       renderImportDrafts(); announce(result.message);
     } catch (error) { announce(error.message, "error"); }
     finally { button.disabled = false; button.textContent = "Read menu with AI"; form.reset(); }
@@ -273,7 +276,8 @@
   function renderImportDrafts() {
     const root = document.querySelector("#import-drafts"); if (!root) return;
     if (!state.importDrafts.length) { root.innerHTML = ""; return; }
-    root.innerHTML = `<div class="import-drafts-heading"><strong>Review imported drafts</strong><span>Select the dishes you want to add. You can edit all details afterward.</span></div><div class="import-draft-list">${state.importDrafts.map((item) => `<label class="import-draft"><input type="checkbox" value="${escapeHtml(item.draftId)}" checked /><span class="import-draft-copy"><strong>${escapeHtml(item.name)}</strong><span>${escapeHtml(item.category)} · ${money(Math.round(item.price * 100))}</span>${item.notes ? `<small>${escapeHtml(item.notes)}</small>` : ""}${item.highlighted ? '<em>Marked as a highlight</em>' : ""}</span></label>`).join("")}</div><button class="button primary full-width" id="import-selected" type="button">Add selected items</button>`;
+    const readSummary = state.importSource?.characters_read ? `Read ${Number(state.importSource.characters_read).toLocaleString()} characters from ${escapeHtml(state.importSource.name)}. ` : "";
+    root.innerHTML = `<div class="import-drafts-heading"><strong>Review imported drafts</strong><span>${readSummary}Select the dishes you want to add. You can edit all details afterward.</span></div><div class="import-draft-list">${state.importDrafts.map((item) => `<label class="import-draft"><input type="checkbox" value="${escapeHtml(item.draftId)}" checked /><span class="import-draft-copy"><strong>${escapeHtml(item.name)}</strong><span>${escapeHtml(item.category)} · ${money(Math.round(item.price * 100))}</span>${item.notes ? `<small>${escapeHtml(item.notes)}</small>` : ""}${item.highlighted ? '<em>Marked as a highlight</em>' : ""}</span></label>`).join("")}</div><button class="button primary full-width" id="import-selected" type="button">Add selected items</button>`;
     root.querySelector("#import-selected").addEventListener("click", importSelectedDrafts);
   }
 
@@ -349,19 +353,19 @@
 
   function startVoiceInput() {
     const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!Recognition) { document.querySelector("#voice-transcript")?.focus(); announce("This browser cannot use the microphone. Type the change in the box, then tap Preview change."); return; }
+    if (!Recognition) { document.querySelector("#voice-transcript")?.focus(); announce("This browser cannot use the microphone. Type the instruction in the box, then tap Create safe plan."); return; }
     const button = document.querySelector("#start-voice"); const transcript = document.querySelector("#voice-transcript"); const recognition = new Recognition();
     recognition.lang = navigator.language || "en-US"; recognition.interimResults = false; recognition.continuous = false; recognition.maxAlternatives = 1;
     button.disabled = true; button.textContent = "Listening…";
-    recognition.onresult = async (event) => { transcript.value = [...event.results].map((result) => result[0].transcript).join(" ").trim(); button.disabled = false; button.textContent = "🎙 Speak a change"; await previewVoiceCommand(); };
-    recognition.onerror = () => { button.disabled = false; button.textContent = "🎙 Speak a change"; document.querySelector("#voice-transcript")?.focus(); announce("This browser cannot use the microphone. Type the change in the box instead."); };
-    recognition.onend = () => { button.disabled = false; button.textContent = "🎙 Speak a change"; };
-    try { recognition.start(); } catch { button.disabled = false; button.textContent = "🎙 Speak a change"; announce("The microphone is already in use. Try again in a moment.", "error"); }
+    recognition.onresult = async (event) => { transcript.value = [...event.results].map((result) => result[0].transcript).join(" ").trim(); button.disabled = false; button.textContent = "🎙 Talk to assistant"; await previewVoiceCommand(); };
+    recognition.onerror = () => { button.disabled = false; button.textContent = "🎙 Talk to assistant"; document.querySelector("#voice-transcript")?.focus(); announce("This browser cannot use the microphone. Type the instruction in the box instead."); };
+    recognition.onend = () => { button.disabled = false; button.textContent = "🎙 Talk to assistant"; };
+    try { recognition.start(); } catch { button.disabled = false; button.textContent = "🎙 Talk to assistant"; announce("The microphone is already in use. Try again in a moment.", "error"); }
   }
 
   async function previewVoiceCommand() {
-    const transcript = document.querySelector("#voice-transcript").value.trim(); if (transcript.length < 4) { announce("Speak or type a specific menu change first.", "error"); return; }
-    const button = document.querySelector("#preview-voice"); const original = button.textContent; button.disabled = true; button.textContent = "Making preview…"; state.voicePlan = null; renderVoicePlan();
+    const transcript = document.querySelector("#voice-transcript").value.trim(); if (transcript.length < 4) { announce("Speak or type a specific menu instruction first.", "error"); return; }
+    const button = document.querySelector("#preview-voice"); const original = button.textContent; button.disabled = true; button.textContent = "Making plan…"; state.voicePlan = null; renderVoicePlan();
     try {
       state.voicePlan = await request("/api/owner/voice/plan", { method: "POST", body: JSON.stringify({ transcript }) });
       renderVoicePlan(); announce("Review the plan below. Nothing has changed yet.");
@@ -457,11 +461,12 @@
           ${groups.size ? [...groups.entries()].map(([category, items]) => `<section class="category-section"><h2>${escapeHtml(category)}</h2><div class="menu-cards">${items.map(publicItem).join("")}</div></section>`).join("") : `<section class="empty-public"><h2>The menu is being prepared</h2><p>Please check with the team for today’s offerings.</p></section>`}
         </section>
       </main>
-      <section class="waiter" aria-label="Ask our AI waiter"><div class="waiter-inner"><div class="waiter-head"><div><p class="eyebrow">Need a hand?</p><h2>Ask our AI waiter</h2></div><span class="waiter-status">Menu-aware</span></div><div id="chat-messages" class="chat-messages" aria-live="polite"><div class="chat-message assistant">I can help with what’s listed on this menu. For details that aren’t in the notes, I’ll check with staff.</div></div>${data.suggested_questions.length ? `<div class="chips" aria-label="Suggested questions">${data.suggested_questions.map((question) => `<button class="chip" data-question="${escapeHtml(question.text)}">${escapeHtml(question.text)}</button>`).join("")}</div>` : ""}<form id="chat-form" class="chat-form"><label class="sr-only" for="chat-input">Ask a question about this menu</label><input id="chat-input" name="question" maxlength="1000" placeholder="Ask about dishes, prices, or notes…" autocomplete="off" required /><button class="button primary" type="submit">Ask</button></form></div></section>`;
+      <section class="waiter" aria-label="Ask our AI waiter"><div class="waiter-inner"><div class="waiter-head"><div><p class="eyebrow">Need a hand?</p><h2>Ask our AI waiter</h2></div><span class="waiter-status">Menu-aware</span></div><div id="chat-messages" class="chat-messages" aria-live="polite"><div class="chat-message assistant">I can help with what’s listed on this menu. For details that aren’t in the notes, I’ll check with staff.</div></div>${data.suggested_questions.length ? `<div class="chips" aria-label="Suggested questions">${data.suggested_questions.map((question) => `<button class="chip" data-question="${escapeHtml(question.text)}">${escapeHtml(question.text)}</button>`).join("")}</div>` : ""}<form id="chat-form" class="chat-form"><label class="sr-only" for="chat-input">Ask a question about this menu</label><input id="chat-input" name="question" maxlength="1000" placeholder="Ask about dishes, prices, or notes…" autocomplete="off" required /><button class="button secondary mic-button" id="public-mic" type="button" aria-label="Speak your question">🎙</button><button class="button primary" type="submit">Ask</button></form><p class="voice-help">Tap the microphone to speak in Chrome or Edge, or type your question.</p></div></section>`;
     document.querySelector("#chat-form").addEventListener("submit", (event) => sendChat(event, data.restaurant.slug));
     document.querySelectorAll(".chip").forEach((chip) => chip.addEventListener("click", () => {
       document.querySelector("#chat-input").value = chip.dataset.question; document.querySelector("#chat-form").requestSubmit();
     }));
+    document.querySelector("#public-mic").addEventListener("click", () => startPublicVoice(data.restaurant.slug));
   }
 
   function publicItem(item) {
@@ -471,7 +476,7 @@
   async function sendChat(event, slug) {
     event.preventDefault();
     const form = event.currentTarget; const input = form.elements.question; const question = input.value.trim(); if (!question) return;
-    const button = form.querySelector("button"); const messages = document.querySelector("#chat-messages");
+    const button = form.querySelector('button[type="submit"]'); const messages = document.querySelector("#chat-messages");
     messages.insertAdjacentHTML("beforeend", `<div class="chat-message user">${escapeHtml(question)}</div><div class="chat-message assistant pending">Looking at the menu…</div>`);
     input.value = ""; input.disabled = true; button.disabled = true; messages.scrollTop = messages.scrollHeight;
     try {
@@ -480,6 +485,18 @@
     } catch (error) {
       messages.querySelector(".pending")?.remove(); messages.insertAdjacentHTML("beforeend", `<div class="chat-message assistant error-message">${escapeHtml(error.message)}</div>`);
     } finally { input.disabled = false; button.disabled = false; input.focus(); messages.scrollTop = messages.scrollHeight; }
+  }
+
+  function startPublicVoice(slug) {
+    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const input = document.querySelector("#chat-input"); const button = document.querySelector("#public-mic"); const messages = document.querySelector("#chat-messages");
+    if (!Recognition) { input.focus(); messages.insertAdjacentHTML("beforeend", `<div class="chat-message assistant">Voice input needs Chrome or Edge. You can type your question here.</div>`); messages.scrollTop = messages.scrollHeight; return; }
+    const recognition = new Recognition(); recognition.lang = navigator.language || "en-US"; recognition.interimResults = false; recognition.continuous = false; recognition.maxAlternatives = 1;
+    button.disabled = true; button.textContent = "…";
+    recognition.onresult = (event) => { input.value = [...event.results].map((result) => result[0].transcript).join(" ").trim(); document.querySelector("#chat-form").requestSubmit(); };
+    recognition.onerror = () => { messages.insertAdjacentHTML("beforeend", `<div class="chat-message assistant">I could not access the microphone. Please type your question.</div>`); messages.scrollTop = messages.scrollHeight; input.focus(); };
+    recognition.onend = () => { button.disabled = false; button.textContent = "🎙"; };
+    try { recognition.start(); } catch { button.disabled = false; button.textContent = "🎙"; input.focus(); }
   }
 
   if (path === "/owner") dashboard();
